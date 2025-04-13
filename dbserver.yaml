@@ -1,0 +1,74 @@
+---
+- name: Setup Database Server
+  hosts: dbserver
+  become: true
+  vars_prompt:
+    - name: "mongo_password"
+      prompt: "Enter the MongoDB password for user 'kundanvyas197'"
+      private: yes
+  tasks:
+    # Update the apt cache
+    - name: Update the apt cache
+      apt:
+        update_cache: yes
+
+    # Install gnupg and curl
+    - name: Install gnupg and curl
+      apt:
+        name: 
+          - gnupg
+          - curl
+        state: present
+
+    # Import MongoDB public key
+    - name: Import MongoDB public key
+      shell: |
+        curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg
+      args:
+        executable: /bin/bash
+        creates: /usr/share/keyrings/mongodb-server-8.0.gpg
+
+    # Add MongoDB repository
+    - name: Add MongoDB repository
+      copy:
+        content: |
+          deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse
+        dest: /etc/apt/sources.list.d/mongodb-org-8.0.list
+
+    # Update the apt cache again after adding MongoDB repo
+    - name: Update the apt cache again after adding MongoDB repo
+      apt:
+        update_cache: yes
+
+    # Install MongoDB
+    - name: Install MongoDB
+      apt:
+        name: mongodb-org
+        state: present
+
+    # Install MongoDB shell
+    - name: Install MongoDB shell
+      apt:
+        name: mongodb-mongosh
+        state: present
+
+    # Start MongoDB service
+    - name: Start MongoDB service
+      service:
+        name: mongod
+        state: started
+        enabled: true
+
+    # Connect to MongoDB Atlas and verify connection
+    - name: Connect to MongoDB Atlas and verify connection
+      shell: |
+        echo "{{ mongo_password }}" | mongosh "mongodb+srv://kundanvyas197:yFlHPYinWgR8NIRH@merncluster.pz1lu.mongodb.net/travelmemory?retryWrites=true&w=majority" --apiVersion 1 --username kundanvyas197 --password
+      args:
+        executable: /bin/bash
+      register: mongo_connection
+      changed_when: false
+
+    # Display MongoDB connection output
+    - name: Display MongoDB connection output
+      debug:
+        var: mongo_connection.stdout

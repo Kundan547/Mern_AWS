@@ -1,0 +1,94 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION = 'us-east-1'
+        ECR_REPO_URI_FRONTEND = '<your-ecr-repository-uri-for-frontend>'
+        ECR_REPO_URI_BACKEND = '<your-ecr-repository-uri-for-backend>'
+        FRONTEND_IMAGE = 'frontend-service'
+        BACKEND_IMAGE = 'profile-service'
+        GITHUB_REPO = 'github.com/yourusername/your-repo.git'
+        FRONTEND_PORT = '3000'
+        BACKEND_PORT = '5002'
+        AWS_CREDENTIALS_ID = '<aws-credentials-id>'
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                git branch: 'main', url: env.GITHUB_REPO
+            }
+        }
+
+        stage('Build Frontend Docker Image') {
+            steps {
+                dir('frontend') {
+                    sh 'docker build -t ${ECR_REPO_URI_FRONTEND}:${FRONTEND_IMAGE} .'
+                }
+            }
+        }
+
+        stage('Build Backend Docker Image') {
+            steps {
+                dir('backend/profileService') {
+                    sh 'docker build -t ${ECR_REPO_URI_BACKEND}:${BACKEND_IMAGE} .'
+                }
+            }
+        }
+
+        stage('Authenticate with ECR') {
+            steps {
+                withCredentials([aws(credentialsId: env.AWS_CREDENTIALS_ID, region: env.AWS_REGION)]) {
+                    sh 'aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REPO_URI_FRONTEND}'
+                    sh 'aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REPO_URI_BACKEND}'
+                }
+            }
+        }
+
+        stage('Push Frontend Docker Image to ECR') {
+            steps {
+                sh 'docker push ${ECR_REPO_URI_FRONTEND}:${FRONTEND_IMAGE}'
+            }
+        }
+
+        stage('Push Backend Docker Image to ECR') {
+            steps {
+                sh 'docker push ${ECR_REPO_URI_BACKEND}:${BACKEND_IMAGE}'
+            }
+        }
+
+        stage('Deploy Frontend Container') {
+            steps {
+                sh '''
+                docker stop frontend || true
+                docker rm frontend || true
+                docker run -d --name frontend -p ${FRONTEND_PORT}:3000 ${ECR_REPO_URI_FRONTEND}:${FRONTEND_IMAGE}
+                '''
+            }
+        }
+
+        stage('Deploy Backend Container') {
+            steps {
+                sh '''
+                docker stop backend || true
+                docker rm backend || true
+                docker run -d --name backend -p ${BACKEND_PORT}:5002 ${ECR_REPO_URI_BACKEND}:${BACKEND_IMAGE}
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+
+        success {
+            echo "Deployment successful!"
+        }
+
+        failure {
+            echo "Deployment failed. Check the logs for more details."
+        }
+    }
+}

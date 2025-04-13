@@ -1,0 +1,11 @@
+all:
+  hosts:
+    webserver:
+      ansible_host: public_ip_of_webserver
+      ansible_user: ubuntu
+      ansible_ssh_private_key_file: /path/to/private_key.pem
+    dbserver:
+      ansible_host: private_ip_of_dbserver
+      ansible_user: ubuntu
+      ansible_ssh_private_key_file: /path/to/private_key.pem
+      ansible_ssh_common_args: '-o ProxyCommand="ssh -W %h:%p -i /home/kundan/Downloads/testing.pem ubuntu@public_ip_of_webserver"'
