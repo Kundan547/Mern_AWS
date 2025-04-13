@@ -1,0 +1,370 @@
+---
+- name: Setup MERN Web Server with ECR Integration
+  hosts: webserver
+  become: yes
+  vars:
+    public_ip: "public-ip"  # Replace with your actual public IP
+    aws_region: "us-east-1"  # Replace with your actual AWS region
+    ecr_backend_repo: "registry-1.amazonaws.com/mern-backend-repo"
+    ecr_frontend_repo: "registry-1.amazonaws.com/mern-frontend-repo"
+    aws_access_key: "access-key" # Replace with your AWS Access Key
+    aws_secret_key: "secret-access-key" # Replace with your AWS Secret Key
+    # If using IAM role, remove aws_access_key and aws_secret_key vars.
+
+  tasks:
+    # Clean up any potential conflicting Docker repository entries and keys
+    - name: Remove any existing docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove any docker gpg keys
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /usr/share/keyrings/docker.gpg
+        - /etc/apt/keyrings/docker.gpg
+      ignore_errors: yes
+
+    - name: Check for Docker repository files before removal
+      stat:
+        path: "{{ item }}"
+      register: docker_repo_files
+      loop:
+        - /etc/apt/sources.list.d/docker.list
+        - /etc/apt/sources.list.d/docker.sources
+
+    - name: Clean up apt sources list if Docker files were present
+      shell: |
+        sudo rm -f /etc/apt/sources.list.d/docker.list
+        sudo rm -f /etc/apt/sources.list.d/docker.sources
+      when: docker_repo_files.results|selectattr('stat.exists')|list|length > 0
+      args:
+        executable: /bin/bash
+
+    # Update system
+    - name: Update the apt cache (verbose)
+      shell: |
+        sudo apt update -o Acquire::Retries=3
+      register: apt_update_result
+      failed_when: apt_update_result.rc != 0
+
+    - name: Display apt update error if any
+      debug:
+        var: apt_update_result.stderr_lines
+      when: apt_update_result.rc != 0
+
+    # Check apt sources list
+    - name: Check apt sources.list
+      command: cat /etc/apt/sources.list
+      register: sources_list_content
+      ignore_errors: yes
+    - name: display sources.list content
+      debug:
+        var: sources_list_content.stdout_lines
+
+    - name: Check apt sources.list.d
+      command: ls /etc/apt/sources.list.d/
+      register: sources_list_d_content
+      ignore_errors: yes
+    - name: display sources.list.d content
+      debug:
+        var: sources_list_d_content.stdout_lines
+
+    # Try to fix broken packages
+    - name: Fix broken packages
+      apt:
+        autofix: yes
+      ignore_errors: yes
+
+    # Install Docker dependencies
+    - name: Install Docker dependencies
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+        state: present
+
+    # Add Docker repository and key properly
+    - name: Add Docker GPG key
+      shell: |
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      args:
+        executable: /bin/bash
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+
+    # Install Docker CE
+    - name: Install Docker CE
+      apt:
+        name: docker-ce
+        state: present
+        update_cache: yes
+
+    - name: Start and enable Docker service
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add the current user to the Docker group
+      user:
+        name: ubuntu
+        groups: docker
+        append: yes
+
+    # Install AWS CLI dependencies
+    - name: Install AWS CLI dependencies
+      apt:
+        name:
+          - unzip
+          - python3-certifi
+          - openssl # install openssl
+        state: present
+        update_cache: yes
+
+    - name: Update ca-certificates
+      apt:
+        name: ca-certificates
+        update_cache: yes
+        state: latest
+
+    - name: Download AWS CLI (using curl as fallback)
+      shell: |
+        export PYTHONHTTPSVERIFY=1
+        curl -o /tmp/awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
+      register: curl_result
+      failed_when: curl_result.rc != 0
+      args:
+        executable: /bin/bash
+
+    - name: Extract AWS CLI
+      unarchive:
+        src: /tmp/awscliv2.zip
+        dest: /tmp/
+        remote_src: yes
+
+    - name: Install AWS CLI
+      shell: |
+        sudo /tmp/aws/install --update
+      args:
+        executable: /bin/bash
+
+    - name: Clean up AWS CLI installation files
+      file:
+        path: /tmp/awscliv2.zip
+        state: absent
+
+    - name: Clean up AWS CLI extracted files
+      file:
+        path: /tmp/aws
+        state: absent
+
+    - name: Reboot the server
+      reboot:
+        reboot_timeout: 300
+
+    # Login to Amazon ECR
+    - name: Login to ECR
+      shell: |
+        aws ecr get-login-password --region {{ aws_region }} | docker login --username AWS --password-stdin {{ ecr_backend_repo }}
+        aws ecr get-login-password --region {{ aws_region }} | docker login --username AWS --password-stdin {{ ecr_frontend_repo }}
+      args:
+        executable: /bin/bash
+      environment:
+        AWS_ACCESS_KEY_ID: "{{ aws_access_key }}"
+        AWS_SECRET_ACCESS_KEY: "{{ aws_secret_key }}"
+
+    - name: Debug AWS Credentials
+      debug:
+        var: ansible_env
+      when: aws_access_key is defined
+
+    # Clone the MERN application repository
+    - name: Clone the MERN application repository
+      git:
+        repo: https://github.com/Kundan547/Mern_AWS.git
+        dest: /home/ubuntu/MernApp
+        version: main
+
+    # Create .env file for backend
+    - name: Create .env file for backend
+      copy:
+        dest: /home/ubuntu/MernApp/backend/profileService/.env
+        content: |
+          PORT=5002
+          MONGO_URI=mongodb+srv://kundanvyas197:yFlHPYinWgR8NIRH@merncluster.pz1lu.mongodb.net/travelmemory?retryWrites=true&w=majority
+
+    # Create .env file for frontend
+    - name: Create .env file for frontend
+      copy:
+        dest: /home/ubuntu/MernApp/frontend/.env
+        content: |
+          REACT_APP_BACKEND_URL=http://{{ public_ip }}/api
+
+    # Build Docker image for backend
+    - name: Build backend Docker image
+      shell: |
+        docker build -t {{ ecr_backend_repo }} /home/ubuntu/MernApp/backend/profileService
+      args:
+        executable: /bin/bash
+
+    # Push backend Docker image to ECR
+    - name: Push backend Docker image to ECR
+      shell: |
+        docker login -u AWS -p $(aws ecr get-login-password --region {{ aws_region }}) {{ ecr_backend_repo }}
+        docker push {{ ecr_backend_repo }}
+      args:
+        executable: /bin/bash
+
+    # Build Docker image for frontend
+    - name: Build frontend Docker image
+      shell: |
+        docker build -t {{ ecr_frontend_repo }} /home/ubuntu/MernApp/frontend
+      args:
+        executable: /bin/bash
+    # Push frontend Docker image to ECR
+    - name: Push frontend Docker image to ECR
+      shell: |
+        docker login -u AWS -p $(aws ecr get-login-password --region {{ aws_region }}) {{ ecr_frontend_repo }}
+        docker push {{ ecr_frontend_repo }}
+      args:
+        executable: /bin/bash
+
+    # Install PM2 globally
+    - name: Install PM2 globally
+      npm:
+        name: pm2
+        global: yes
+
+    # Start backend using PM2
+    - name: Start backend using PM2
+      command: pm2 start index.js --name backend -f
+      args:
+        chdir: /home/ubuntu/MernApp/backend/profileService
+
+    # Save PM2 process list
+    - name: Save PM2 process list
+      command: pm2 save
+
+    # Install Nginx
+    - name: Install Nginx
+      apt:
+        name: nginx
+        state: present
+
+    # Configure Nginx for MERN Application
+    - name: Configure Nginx for MERN Application
+      copy:
+        dest: /etc/nginx/sites-available/mern_app
+        content: |
+          server {
+              listen 80;
+              server_name {{ public_ip }};
+
+              root /home/ubuntu/MernApp/frontend/build;
+              index index.html;
+
+              location / {
+                  try_files $uri /index.html;
+              }
+
+              location /api/ {
+                  proxy_pass http://localhost:5002;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection 'upgrade';
+                  proxy_set_header Host $host;
+                  proxy_cache_bypass $http_upgrade;
+              }
+
+              error_page 404 /index.html;
+          }
+
+    # Enable the Nginx configuration
+    - name: Enable the Nginx configuration
+      file:
+        src: /etc/nginx/sites-available/mern_app
+        dest: /etc/nginx/sites-enabled/mern_app
+        state: link
+
+    # Remove default Nginx configuration
+    - name: Remove default Nginx configuration
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    # Test Nginx configuration
+    - name: Test Nginx configuration
+      command: nginx -t
+      register: nginx_test
+
+    # Display Nginx configuration test output
+    - name: Display Nginx configuration test output
+      debug:
+        var: nginx_test.stdout
+
+    # Restart Nginx
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
+
+    # Set ownership for frontend build directory
+    - name: Set ownership for frontend build directory
+      file:
+        path: /home/ubuntu/MernApp/frontend/build
+        owner: www-data
+        group: www-data
+        recurse: yes
+
+    # Set permissions for frontend build directory
+    - name: Set permissions for frontend build directory
+      file:
+        path: /home/ubuntu/MernApp/frontend/build
+        mode: '0755'
+        recurse: yes
+
+    # Set execute permission for parent directories
+    - name: Set execute permission for parent directories
+      shell: |
+        chmod +x /home/ubuntu
+        chmod +x /home/ubuntu/MernApp
+      args:
+        executable: /bin/bash
+
+    # Install Jenkins on Ubuntu-based system
+    - name: Add Jenkins GPG key
+      shell: |
+        curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | sudo tee \
+          /usr/share/keyrings/jenkins-keyring.asc > /dev/null
+      args:
+        executable: /bin/bash
+
+    - name: Add Jenkins repository
+      apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/"
+        state: present
+        filename: jenkins
+
+    - name: Install Jenkins dependencies and Jenkins
+      apt:
+        name:
+          - openjdk-17-jre
+          - fontconfig
+          - jenkins
+        state: present
+        update_cache: yes
+
+    - name: Start Jenkins service
+      service:
+        name: jenkins
+        state: started
+        enabled: yes
